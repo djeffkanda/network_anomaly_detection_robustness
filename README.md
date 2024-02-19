@@ -1,4 +1,4 @@
-# network_anomaly_detection_robustness
+# Deep Learning for Network Anomaly Detection: Robustness Evaluation under Data Contamination
 
 # Deep unsupervised anomaly detection algorithms
 This repository collects different unsupervised machine learning algorithms to detect anomalies.
