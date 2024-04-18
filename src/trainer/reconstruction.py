@@ -1,3 +1,4 @@
+import copy
 from collections import defaultdict
 
 import pandas as pd
@@ -7,6 +8,9 @@ from matplotlib import pyplot as plt
 import seaborn as sns
 
 from sklearnex import patch_sklearn
+from tqdm import trange
+
+from utils.utils import get_latent_regularizer
 
 # The names match scikit-learn estimators
 patch_sklearn()
@@ -21,6 +25,7 @@ from torch.utils.data.dataloader import DataLoader
 from .base import BaseTrainer
 from loss.EntropyLoss import EntropyLoss
 from torch import nn
+from torch.optim.lr_scheduler import StepLR
 import torch.nn.functional as F
 
 from sklearn import metrics as sk_metrics
@@ -38,6 +43,9 @@ class AutoEncoderTrainer(BaseTrainer):
         super(AutoEncoderTrainer, self).__init__(model, batch_size, lr, n_epochs, n_jobs_dataloader, device, **kwargs)
         self.tracker = defaultdict(list)
 
+        slr_step_size, slr_gamma = kwargs.get('slr_step_size', 5), kwargs.get('slr_gamma', .3)
+        self.scheduler = StepLR(self.optimizer, step_size=slr_step_size, gamma=slr_gamma)
+
     def score(self, sample: torch.Tensor):
         _, X_prime = self.model(sample)
         return ((sample - X_prime) ** 2).sum(axis=1)
@@ -50,7 +58,7 @@ class AutoEncoderTrainer(BaseTrainer):
         # gmm = GaussianMixture(n_components=num_clusters, max_iter=800)
         # gmm.fit(X)
         # pred_label = gmm.score_samples(X)
-        scaler = MinMaxScaler(feature_range=(-2, 2))
+        scaler = MinMaxScaler(feature_range=(-2, 2))  #
         pred_label = pred_label.reshape(-1, 1)
         scaler.fit(pred_label)
         pred_label = scaler.transform(pred_label.reshape(-1, 1))
@@ -80,20 +88,41 @@ class AutoEncoderTrainer(BaseTrainer):
 
         return indices_selection
 
-    def re_evaluation_proba(self, X, p, num_clusters=20):
+    def re_evaluation_proba(self, X, p, num_clusters=20, tau=1.0, eps=.0, **kwargs):
 
         gmm = GaussianMixture(n_components=num_clusters, max_iter=800)
         gmm.fit(X)
-        pred_label = gmm.score_samples(X)
-        scaler = MinMaxScaler(feature_range=(-1, 2))
-        pred_label = pred_label.reshape(-1, 1)
-        scaler.fit(pred_label)
-        pred_label = scaler.transform(pred_label.reshape(-1, 1))
-        tau = 1.0
-        eps = 0.0
-        pred_label = 1 / (1 + np.exp(-(eps + tau * pred_label)))
 
-        indices_selection = np.ravel(pred_label)
+        eval_prob = gmm.predict_proba(X)
+        pred_score = np.log(np.dot(eval_prob, gmm.weights_))
+
+        # pred_score = gmm.score_samples(X)
+
+        # eval_prob_y = np.concatenate([np.dot(eval_prob,gmm.weights_).reshape(-1, 1), kwargs['label'].reshape(-1,
+        # 1)], axis=-1)
+
+        # km = KMeans(n_clusters=num_clusters, random_state=0, n_init="auto").fit(X)
+        # pred_label_km = km.score(X)
+        # cluster_pred = km.predict(X)
+
+        def transfrom_to_proba(pred_score):
+            scaler = MinMaxScaler(feature_range=(-5, 6))
+            pred_weigths = pred_score.reshape(-1, 1)
+            scaler.fit(pred_weigths)
+            pred_weigths = scaler.transform(pred_weigths.reshape(-1, 1))
+            pred_weigths = 1 / (1 + np.exp(-(eps + tau * pred_weigths)))
+            return pred_weigths
+
+        pred_weigths = transfrom_to_proba(pred_score)
+        # pred_weigths = transfrom_to_proba(np.log(np.dot(eval_prob, gmm.weights_)))
+
+        # df = pd.DataFrame(dict(label=kwargs['label'], gmmsc=pred_score,
+        #                        weight=np.ravel(pred_weigths),
+        #                        weight_=np.ravel(pred_weigths_),
+        #                        gmmmine=np.log(np.dot(eval_prob, gmm.weights_)),
+        #                        ))
+
+        indices_selection = np.ravel(pred_weigths)
         return indices_selection
 
     def re_evaluation(self, X, p, num_clusters=20):
@@ -129,9 +158,45 @@ class AutoEncoderTrainer(BaseTrainer):
 
         return indices_selection
 
-    def train_iter(self, X, **kwargs):
-        code, X_prime = self.model(X)
+    def training_loop(self, train_loader, epoch, **kwargs):
+        epoch_loss = 0.0
+        len_trainloader = len(train_loader)
+        kwargs['model_c'] = copy.deepcopy(self.model)
+        counter = 1
 
+        with trange(len_trainloader) as t:
+            for sample in train_loader:
+                X = sample[0]
+                kwargs['label'] = sample[1]
+                kwargs['index'] = sample[2]
+                kwargs['epoch'] = epoch
+                X = X.to(self.device).float()
+                # TODO handle this just for trainer DBESM
+                # if len(X) < self.batch_size:
+                #     t.update()
+                #     break
+
+                # Reset gradient
+                self.optimizer.zero_grad()
+
+                loss = self.train_iter(X, **kwargs)
+
+                # Backpropagation
+                loss.backward()
+                self.optimizer.step()
+
+                epoch_loss += loss.item()
+                t.set_postfix(
+                    loss='{:.3f}'.format(epoch_loss / counter),
+                    epoch=epoch + 1
+                )
+                t.update()
+                counter += 1
+        return epoch_loss
+
+    def train_iter(self, X, **kwargs):
+
+        code, X_prime = self.model(X)
         reg_n = self.kwargs.get('reg_n', 0)  # 1e-3 # 1e-3
         reg_a = self.kwargs.get('reg_a', 0)  # 1e-1 * 0
         alpha = kwargs['contamination_rate']
@@ -142,6 +207,7 @@ class AutoEncoderTrainer(BaseTrainer):
         y = kwargs['label']
 
         dataset = {}
+        type_of_center = kwargs.get('type_center', 'zero')
 
         if self.kwargs.get('rob', False) and self.kwargs.get('warmup', 0) < 1 + kwargs["epoch"]:
             rob_method = self.kwargs.get("rob_method", 'ours')
@@ -166,15 +232,29 @@ class AutoEncoderTrainer(BaseTrainer):
                 loss = loss.mean()
             else:
 
-                l2_z = (code ** 2).sum(axis=-1)  # code.norm(2, dim=1)
+                l2_z = get_latent_regularizer(self.model.latent_center, code, type_of_center)
                 loss_n = ((X - X_prime) ** 2).sum(axis=-1) + reg_n * l2_z
-                loss_a = reg_a * 1 / (((X - X_prime) ** 2).sum(axis=-1)) + reg_a * 1 / l2_z
+                loss_a = reg_a * 1 / (((X - X_prime) ** 2).sum(axis=-1))  # + reg_a * 1 / l2_z
 
-                data = torch.cat([code, loss_n.unsqueeze(-1)], dim=-1).cpu().detach()
+                # cosim = F.cosine_similarity(X, X_prime) # cosim.unsqueeze(-1)
+
+                # data = torch.cat([code, loss_n.unsqueeze(-1)], dim=-1).cpu().detach()
                 # data = torch.cat([code, torch.log(loss_n).unsqueeze(-1)], dim=-1).cpu().detach()
 
                 with torch.no_grad():
-                    selection_mask = self.re_evaluation_proba(data, alpha * 100, num_clusters=num_clusters)  # 10
+                    # model_copy = kwargs.get('model_c', self.model)
+                    # code_c, X_prime_c = model_copy(X)
+                    # l2_z_c = self.get_latent_regularizer(code_c, type_of_center)
+                    # loss_n_c = ((X - X_prime_c) ** 2).sum(axis=-1) + reg_n * l2_z_c
+                    cosim = F.cosine_similarity(X, X_prime)  # cosim.unsqueeze(-1)
+                    # data = torch.cat([code, loss_n.unsqueeze(-1)], dim=-1).cpu().detach()
+                    data = torch.cat([code, cosim.unsqueeze(-1), loss_n.unsqueeze(-1)], dim=-1).cpu().detach()
+                    # data = torch.cat([code_c, loss_n_c.unsqueeze(-1)], dim=-1).cpu().detach()
+                    tau = self.kwargs.get('tau', 1.)
+                    eps = self.kwargs.get('eps', 0.)
+                    selection_mask = self.re_evaluation_proba(data, alpha * 100,
+                                                              num_clusters=num_clusters, tau=tau, eps=eps,
+                                                              label=y)  # 10
                     # df = pd.DataFrame(dict(gt=y.cpu().numpy(), mask=selection_mask.cpu().numpy().astype(int)))
 
                     # df = pd.DataFrame(dict(gt=y.cpu().numpy(), mask=selection_mask,
@@ -188,14 +268,9 @@ class AutoEncoderTrainer(BaseTrainer):
                 # loss = torch.cat([loss_n, (1 - selection_mask) * loss_a], dim=0)
                 loss = loss.mean()
         else:
-            loss = ((X - X_prime) ** 2).sum(axis=-1).mean() # + reg_n * (code ** 2).sum(axis=-1).mean()
-            type_of_center = kwargs.get('type_center', 'zero')
-            if type_of_center == 'zero':
-                loss += reg_n * (code ** 2).sum(dim=-1).mean()
-            elif type_of_center == 'learnable':
-                loss += reg_n * ((code - self.model.latent_center) ** 2).sum(axis=-1).mean()
-            elif type_of_center == 'mean':
-                loss += reg_n * ((code - code.mean(dim=0)) ** 2).sum(axis=-1).mean()
+            loss = (((X - X_prime) ** 2).sum(axis=-1).mean() +
+                    reg_n * get_latent_regularizer(self.model.latent_center, code, type_of_center).mean())
+
         return loss
 
 

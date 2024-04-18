@@ -11,6 +11,8 @@ from .memory_module import MemoryUnit
 from torch import nn
 from typing import Tuple, List
 
+from .utils import weights_init_xavier
+
 
 class AutoEncoder(nn.Module):
     """
@@ -34,6 +36,16 @@ class AutoEncoder(nn.Module):
         # Randomly initialize the model center and make it learnable
         self.latent_center = nn.Parameter(torch.randn(1, latent_dim))
         self.name = "AutoEncoder"
+
+        def init_normal(m):
+            if type(m) == nn.Linear:
+                # nn.init.uniform_(m.weight)
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    m.bias.data.zero_()
+
+        self.encoder.apply(init_normal)
+        self.decoder.apply(init_normal)
 
         self.kwargs = kwargs
 
@@ -188,8 +200,8 @@ class AutoEncoder(nn.Module):
                 (latent_dim, int(in_features * .50), nn.ReLU()),
                 (int(in_features * .50), int(in_features * .66), nn.ReLU()),
                 (int(in_features * .66), int(in_features * .83), nn.ReLU()),
-                (int(in_features * .83), in_features, nn.Sigmoid()),
-                ]
+                (int(in_features * .83), in_features, None)  # nn.Sigmoid()),
+            ]
 
         return enc_layers, dec_layers
 
@@ -226,11 +238,12 @@ class AutoEncoder(nn.Module):
 
     def get_params(self) -> dict:
         return {
+            'type_center': self.kwargs['type_center'],
             "in_features": self.in_features,
             "latent_dim": self.latent_dim,
             'robust': self.kwargs['rob'],
             'reg_n': self.kwargs['reg_n'],
-            'reg_a': self.kwargs['reg_a']
+            'reg_a': self.kwargs['reg_a'],
         }
 
     def reset(self):

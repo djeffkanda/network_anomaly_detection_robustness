@@ -10,7 +10,7 @@ from tqdm import trange
 
 from utils.metrics import _estimate_threshold_metrics
 
-from utils.utils import Patience
+from src.utils.utils import Patience
 
 
 class BaseTrainer(ABC):
@@ -34,6 +34,7 @@ class BaseTrainer(ABC):
         patience = kwargs.get('patience', 5)
         self.early_stopper = Patience(patience=patience, use_train_loss=False, model=self.model)
         self.kwargs = kwargs
+        self.scheduler = None
 
         # self.contamination_rate =
 
@@ -60,6 +61,43 @@ class BaseTrainer(ABC):
     def set_optimizer(self, weight_decay):
         return optim.Adam(self.model.parameters(), lr=self.lr, weight_decay=weight_decay)
 
+    def training_loop(self, train_loader, epoch, **kwargs):
+        epoch_loss = 0.0
+        len_trainloader = len(train_loader)
+        counter = 1
+        with trange(len_trainloader) as t:
+            for sample in train_loader:
+                X = sample[0]
+                kwargs['label'] = sample[1]
+                kwargs['index'] = sample[2]
+                kwargs['epoch'] = epoch
+                X = X.to(self.device).float()
+                # TODO handle this just for trainer DBESM
+                # if len(X) < self.batch_size:
+                #     t.update()
+                #     break
+
+                # Reset gradient
+                self.optimizer.zero_grad()
+
+                loss = self.train_iter(X, **kwargs)
+
+                # Backpropagation
+                loss.backward()
+                self.optimizer.step()
+
+                if self.scheduler is not None:
+                    self.scheduler.step()
+
+                epoch_loss += loss.item()
+                t.set_postfix(
+                    loss='{:.3f}'.format(epoch_loss / counter),
+                    epoch=epoch + 1
+                )
+                t.update()
+                counter += 1
+        return epoch_loss
+
     def train(self, train_loader: DataLoader, val_loader: DataLoader = None, test_loader: DataLoader = None, **kwargs):
         self.model.train()
         self.before_training(train_loader)
@@ -67,43 +105,11 @@ class BaseTrainer(ABC):
         print("Started training")
         should_stop = False
         for epoch in range(self.n_epochs):
-            epoch_loss = 0.0
-            # if not val_loader is None:
-            #     loss = self.eval(train_loader)
-            #     print(f'validation score: loss:{loss:.3f}, score:{np.mean(self.test(val_loader)[1]):.3f}')
-            len_trainloader = len(train_loader)
-            counter = 1
+            kwargs['epoch'] = epoch
+            epoch_loss = self.training_loop(train_loader, **kwargs)
 
-            with trange(len_trainloader) as t:
-                for sample in train_loader:
-                    X = sample[0]
-                    kwargs['label'] = sample[1]
-                    kwargs['index'] = sample[2]
-                    kwargs['epoch'] = epoch
-                    X = X.to(self.device).float()
-                    # TODO handle this just for trainer DBESM
-                    # if len(X) < self.batch_size:
-                    #     t.update()
-                    #     break
-
-                    # Reset gradient
-                    self.optimizer.zero_grad()
-
-                    loss = self.train_iter(X, **kwargs)
-
-                    # Backpropagation
-                    loss.backward()
-                    self.optimizer.step()
-
-                    epoch_loss += loss.item()
-                    t.set_postfix(
-                        loss='{:.3f}'.format(epoch_loss / counter),
-                        epoch=epoch + 1
-                    )
-                    t.update()
-                    counter += 1
             if val_loader is not None:
-                val_loss = self.eval(val_loader, **kwargs).item()
+                val_loss = self.test(val_loader)[1].mean().item()
                 results = self._eval(test_loader)
 
                 if kwargs['early_stopping']:
@@ -113,7 +119,7 @@ class BaseTrainer(ABC):
                                                           val_auc=results["proc1p"],
                                                           test_f1=results["f_score"])
 
-                    print(f'Val loss :{val_loss} | Train loss: {self.eval(train_loader, **kwargs).item()} '
+                    print(f'Val loss :{val_loss} | Train loss: {self.test(train_loader)[1].mean().item()} '
                           f'| early_stop? {should_stop} | patience:{self.early_stopper.counter}  ')
                 print(results)
 

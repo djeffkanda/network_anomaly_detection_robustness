@@ -1,3 +1,4 @@
+import torch
 import torch.nn as nn
 from .reconstruction import AutoEncoder as AE
 from .base import BaseModel
@@ -9,11 +10,13 @@ class DUAD(BaseModel):
         self.p = p
         self.r = r
         self.latent_dim = kwargs.get('ae_latent_dim', 1)
+        self.kwargs = kwargs
         self.name = "DUAD"
         self.ae = None
         super(DUAD, self).__init__(**kwargs)
         self.cosim = nn.CosineSimilarity()
-
+        # Randomly initialize the model center and make it learnable
+        self.latent_center = self.ae.latent_center
     def resolve_params(self, dataset_name: str):
         enc_layers = [
             (self.in_features, 60, nn.Tanh()),
@@ -42,8 +45,14 @@ class DUAD(BaseModel):
         return code, x_prime, h_x
 
     def get_params(self) -> dict:
+        reg_n = self.kwargs.get('reg_n', 0)
+        type_of_center = self.kwargs.get('type_center', 'zero')
+        num_cluster = self.kwargs.get('duad_num_cluster', 20)
         return {
             "duad_p": self.p,
             "duad_p0": self.p0,
-            "duad_r": self.r
+            "duad_r": self.r,
+            "type_of_center": type_of_center,
+            "reg_n": reg_n,
+            "num_cluster": num_cluster
         }

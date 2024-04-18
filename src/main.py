@@ -1,3 +1,6 @@
+import sys
+sys.path.append('../')
+
 import argparse
 import bootstrap as bootstrap
 from bootstrap import available_datasets, available_models
@@ -198,7 +201,6 @@ def argument_parser():
     parser.add_argument('--no-early_stopping', dest='early_stopping', action='store_false')
     parser.set_defaults(early_stopping=True)
 
-
     parser.add_argument(
         '--warmup',
         type=int,
@@ -223,7 +225,7 @@ def argument_parser():
     parser.add_argument(
         '--reg_n',
         type=float,
-        default=1e-3,
+        default=0.0,
         help='regulizer factor for the latent representation norm  '
     )
 
@@ -245,11 +247,10 @@ def argument_parser():
         '-toc',
         '--type_center',
         type=str,
+        default='zero',
         choices=["zero", "learnable", "mean"],
-        required=True
+        required=False
     )
-
-
 
     return parser.parse_args()
 

@@ -57,6 +57,15 @@ def get_X_from_loader(loader):
     return X.numpy(), y.numpy()
 
 
+def get_latent_regularizer(latent_center, code, type_of_center):
+    if type_of_center == 'zero':
+        return (code ** 2).sum(dim=-1)
+    elif type_of_center == 'learnable':
+        return ((code - latent_center) ** 2).sum(axis=-1)
+    elif type_of_center == 'mean':
+        return ((code - code.mean(dim=0)) ** 2).sum(axis=-1)
+
+
 def average_results(results: dict):
     """
         Calculate Means and Stds of metrics in @results
@@ -182,4 +191,3 @@ class Patience(EarlyStopper):
     def get_best_vl_metrics(self):
         self.model.load_state_dict(torch.load(self.best_model_path))
         return self.model, self.train_loss, self.val_loss, self.val_auc, self.test_loss, self.test_auc, self.test_ap, self.test_f1, self.test_score, self.best_epoch
-

@@ -15,7 +15,7 @@ class AbstractDataset(Dataset):
         self.name = self.__class__.__name__
 
         self.labels = None
-        X = self._load_data(path)
+        X = self._load_data(path, **kwargs)
 
         self.X, self.y, self.anomaly_ratio = self.select_data_subset(pct, X, **kwargs)
 
@@ -56,7 +56,7 @@ class AbstractDataset(Dataset):
     def __getitem__(self, index) -> T_co:
         return self.X[index], self.y[index], index
 
-    def _load_data(self, path: str):
+    def _load_data(self, path: str, **kwargs):
         if path.endswith(".npz"):
             return np.load(path)[self.npz_key()]
         elif path.endswith(".mat"):
@@ -235,6 +235,7 @@ class ToyDataset(AbstractDataset):
         self.test_idx = []
         self.validation_idx = []
         self.name = "Toy"
+        self.toy_type = kwargs.get('toy_type', 0)
 
     def _load_data(self, path: str = None,
                    mean_normal=np.array([1, 1]),
@@ -246,6 +247,7 @@ class ToyDataset(AbstractDataset):
                    num_abnormal_samples=100
                    ):
         # Generate normal and abnormal data
+
         normal_data = generate_data(mean_normal, cov_normal, num_normal_samples)
         abnormal_data1 = generate_data(mean_abnormal1, cov_abnormal, num_abnormal_samples // 2)
         abnormal_data2 = generate_data(mean_abnormal2, cov_abnormal, num_abnormal_samples // 2)
@@ -257,6 +259,7 @@ class ToyDataset(AbstractDataset):
 
         X = np.concatenate([all_data, labels.reshape(-1, 1)], axis=1)
         self.labels = labels
+
         return X
 
     def npz_key(self):

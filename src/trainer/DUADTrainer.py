@@ -13,6 +13,8 @@ from datamanager.DataManager import DataManager
 from model.DUAD import DUAD
 from sklearn.mixture import GaussianMixture
 
+from src.utils.utils import get_latent_regularizer
+
 
 # from utils.metrics import score_recall_precision, score_recall_precision_w_thresold
 # from viz.viz import plot_2D_latent, plot_energy_percentile
@@ -31,6 +33,7 @@ class DUADTrainer:
         self.metric_hist = []
         self.dm = dm
 
+        self.kwargs = kwargs
         self.r = kwargs.get('duad_r', 10)
         self.p = kwargs.get('duad_p_s', 30)
         self.p0 = kwargs.get('duad_p_0', 35)
@@ -93,27 +96,10 @@ class DUADTrainer:
         y = torch.cat(y, axis=0)
 
         indices = torch.cat(indices, axis=0)
-
-        # selected_indices = indices[self.re_evaluation(X, self.p0, self.num_cluster)]
-
-        # sel_from_clustering = self.re_evaluation(X, self.p0, self.num_cluster)
-        # selected_indices = indices[sel_from_clustering]
-        #
-        # print(f"label 0 ratio:{(y == 0).sum() / len(y)}"
-        #       f"\n")
-        # print(f"label 1 ratio:{(y == 1).sum() / len(y)}"
-        #       f"\n")
-        # print(f"selected label 0 ratio:{(y[sel_from_clustering] == 0).sum() / len(y)}"
-        #       f"\n")
-        # print(f"selected label 1 ratio:{(y[sel_from_clustering] == 1).sum() / len(y)}"
-        #       f"\n")
-        #
-        # self.dm.update_train_set(selected_indices)
         train_ldr = self.dm.get_train_set()
 
         L = []
         L_old = [-1]
-        # print(set(L).difference(set(L_old)))
         reev_count = 0
         while len(set(L_old).difference(set(L))) <= 10 and reev_count < REEVAL_LIMIT:
             for epoch in range(n_epochs):
@@ -172,7 +158,7 @@ class DUADTrainer:
                     with trange(len(train_ldr)) as t:
                         for i, X_i in enumerate(train_ldr, 0):
                             train_inputs = X_i[0].to(self.device).float()
-                            loss += self.train_iter(train_inputs)
+                            loss += self.train_iter(train_inputs, **self.kwargs)
                             mean_loss = loss / (i + 1)
                             t.set_postfix(loss='{:.3f}'.format(mean_loss))
                             t.update()
@@ -185,9 +171,13 @@ class DUADTrainer:
     def train_iter(self, X, **kwargs):
 
         code, X_prime, Z_r = self.model(X)
-        l2_z = (torch.cat([code, Z_r.unsqueeze(-1)], axis=1).norm(2, dim=1)).mean() # (code.norm(2, dim=1)).mean()  # (torch.cat([code, Z_r.unsqueeze(-1)], axis=1).norm(2, dim=1)).mean()
-        reg = 0.5
-        loss = ((X - X_prime) ** 2).sum(axis=-1).mean() + reg * l2_z  # self.criterion(X, X_prime)
+        reg_n = kwargs.get('reg_n', 0)
+        type_of_center = kwargs.get('type_center', 'zero')
+
+        # torch.cat([code, Z_r.unsqueeze(-1)], axis=1)
+
+        loss = (((X - X_prime) ** 2).sum(axis=-1) +
+                reg_n * get_latent_regularizer(self.model.latent_center, torch.cat([code, Z_r.unsqueeze(-1)], axis=1), type_of_center)).mean()
 
         # Use autograd to compute the backward pass.
         self.optimizer.zero_grad()
@@ -230,18 +220,8 @@ class DUADTrainer:
             test_z = np.concatenate(test_z, axis=0)
             test_labels = np.concatenate(test_labels, axis=0)
 
-            # combined_score = np.concatenate([train_score, test_score], axis=0)
-
-            # Evaluation
-            # comp_threshold = 100 * sum(test_labels == 0) / len(test_labels)
-            # res_max = score_recall_precision(combined_score, test_score, test_labels, nq=30)
-            # res = score_recall_precision_w_thresold(combined_score, test_score, test_labels, pos_label=pos_label,
-            #                                         threshold=comp_threshold)
-
             # switch back to train mode
             self.model.train()
-
-            # res = dict(res, **res_max)
 
             return test_score, test_labels
 

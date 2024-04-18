@@ -123,7 +123,8 @@ def resolve_model_trainer(
             in_features=dataset.in_features,
             n_instances=dataset.n_instances,
             device=device,
-            ae_latent_dim=ae_latent_dim
+            ae_latent_dim=ae_latent_dim,
+            **kwargs
         )
         trainer = DUADTrainer(
             model=model,
@@ -135,7 +136,8 @@ def resolve_model_trainer(
             duad_r=duad_r,
             duad_num_cluster=duad_num_cluster,
             lr=learning_rate,
-            weight_decay=weight_decay
+            weight_decay=weight_decay,
+            **kwargs
         )
     else:
         model_trainer_tuple = model_trainer_map.get(model_name, None)
@@ -209,7 +211,17 @@ def train_model(
             for k, v in results.items():
                 all_results[k].append(v)
     else:
+
+        seed_everything(seed)
+        train_ldr, test_ldr, neg_val_ldr, val_ldr = dataset.loaders(batch_size=batch_size,
+                                                                    seed=seed,
+                                                                    contamination_rate=contamination_rate,
+                                                                    validation_ratio=validation_ratio,
+                                                                    holdout=holdout, drop_last_batch=drop_lastbatch,
+                                                                    **kwargs)
         for i in range(n_runs):
+            seed_everything(seed - i)
+
             print(f"Run {i + 1} of {n_runs}")
             if model.name == "DUAD":
                 # DataManager for DUAD only
@@ -242,15 +254,19 @@ def train_model(
                 all_results[k].append(v)
             store_model(model, model.name, dataset_name, None)
 
+
+
             if i < n_runs - 1:
-                seed_everything(seed - i)
-                train_ldr, test_ldr, neg_val_ldr, val_ldr = dataset.loaders(batch_size=batch_size,
-                                                                            seed=seed,
-                                                                            contamination_rate=contamination_rate,
-                                                                            validation_ratio=validation_ratio,
-                                                                            holdout=holdout,
-                                                                            drop_last_batch=drop_lastbatch,
-                                                                            **kwargs)
+
+                # train_ldr, test_ldr, neg_val_ldr, val_ldr = dataset.loaders(batch_size=batch_size,
+                #                                                             seed=seed,
+                #                                                             contamination_rate=contamination_rate,
+                #                                                             validation_ratio=validation_ratio,
+                #                                                             holdout=holdout,
+                #                                                             drop_last_batch=drop_lastbatch,
+                #                                                             **kwargs)
+
+
                 # Reinitialize models' weights
                 # model.reset()
                 model, model_trainer = resolve_model_trainer(
